@@ -3,6 +3,7 @@ package auditor
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/go-spirit/spirit/cache"
@@ -42,6 +43,32 @@ type Audit struct {
 
 	stopChan    chan struct{}
 	stoppedChan chan struct{}
+
+	filters      map[string]*regexFilter
+	filtersOrder []string
+}
+
+type regexFilter struct {
+	r    *regexp.Regexp
+	Expr string
+	Repl string
+}
+
+func (p *regexFilter) Filter(src []byte) []byte {
+	return p.r.ReplaceAll(src, []byte(p.Repl))
+}
+
+func newRegexFilter(expr string, repl string) (*regexFilter, error) {
+	r, err := regexp.Compile(expr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &regexFilter{
+		r:    r,
+		Expr: expr,
+		Repl: repl,
+	}, nil
 }
 
 func init() {
@@ -120,6 +147,25 @@ func (p *Audit) Start() (err error) {
 		return
 	}
 
+	filtersConfig := p.opts.Config.GetConfig("report.filters")
+
+	var filters map[string]*regexFilter
+	var filtersOrder []string
+
+	if !filtersConfig.IsEmpty() {
+		filters = make(map[string]*regexFilter)
+		for _, k := range filtersConfig.Keys() {
+			expr := filtersConfig.GetString(k + ".expr")
+			repl := filtersConfig.GetString(k + ".repl")
+			reg, errReg := newRegexFilter(expr, repl)
+			if errReg != nil {
+				return errReg
+			}
+			filters[k] = reg
+		}
+		filtersOrder = filtersConfig.Keys()
+	}
+
 	p.logStore = logStore
 	p.cache = auditCache
 	p.logSize = p.opts.Config.GetInt64("report.log-size", 10)
@@ -130,6 +176,8 @@ func (p *Audit) Start() (err error) {
 	p.interval = logInterval
 	p.stopChan = make(chan struct{})
 	p.stoppedChan = make(chan struct{})
+	p.filters = filters
+	p.filtersOrder = filtersOrder
 
 	go p.postWorker()
 
@@ -173,6 +221,8 @@ func (p *Audit) Begin(session mail.Session) (err error) {
 	if p.bodyLimit > 0 && len(body) > p.bodyLimit {
 		body = append(body[:p.bodyLimit], []byte("......")...)
 	}
+
+	body = p.appleFilters(body)
 
 	sErr := session.Err()
 
@@ -218,6 +268,7 @@ func (p *Audit) End(session mail.Session) (err error) {
 
 	if len(content.Header) > 0 {
 		data, _ := json.Marshal(content.Header)
+		data = p.appleFilters(data)
 		strHeader = string(data)
 	}
 
@@ -229,6 +280,8 @@ func (p *Audit) End(session mail.Session) (err error) {
 	if p.bodyLimit > 0 && len(body) > p.bodyLimit {
 		body = append(body[:p.bodyLimit], []byte("......")...)
 	}
+
+	body = p.appleFilters(body)
 
 	content.EndBody = body
 
@@ -396,6 +449,17 @@ func (p *Audit) toLogGroup(logs []interface{}) *sls.LogGroup {
 	}
 
 	return nil
+}
+
+func (p *Audit) appleFilters(src []byte) []byte {
+	for _, k := range p.filtersOrder {
+		f, exist := p.filters[k]
+		if !exist {
+			continue
+		}
+		src = f.Filter(src)
+	}
+	return src
 }
 
 func (p *Audit) Route(session mail.Session) worker.HandlerFunc {

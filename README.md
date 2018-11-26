@@ -32,6 +32,17 @@ components.auditor.name-of-this-actor {
 		interval = 1s
 		log-size= 10
 		body-limit = 10
+
+		filters {
+			authorization {
+				expr = """
+				"Authorization":\".*?\"
+				"""
+				repl = """
+				"Authorization": "*****"
+				"""
+			}
+		}
 	}
 
 	sls {
