@@ -250,6 +250,8 @@ func (p *Audit) End(session mail.Session) (err error) {
 		return
 	}
 
+	p.cache.Delete(id)
+
 	content, ok := icontent.(*AuditContent)
 
 	if !ok {
