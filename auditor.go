@@ -22,6 +22,12 @@ var (
 	goringInitSize int64 = 64
 )
 
+type HeaderDiff struct {
+	Added    map[string]string `json:"added,omitempty"`
+	Deleted  map[string]string `json:"deleted,omitempty"`
+	Modified map[string]string `json:"modified,omitempty"`
+}
+
 type Audit struct {
 	opts component.Options
 
@@ -214,7 +220,7 @@ type AuditContent struct {
 func (p *Audit) Begin(session mail.Session) (err error) {
 
 	id := session.Payload().ID()
-	header := session.Payload().Content().GetHeader()
+	header := copyHeader(session.Payload().Content().GetHeader())
 
 	var body = copyBytes(session.Payload().Content().GetBody())
 
@@ -328,7 +334,17 @@ func (p *Audit) End(session mail.Session) (err error) {
 	}
 
 	if session.Query("action") != "step" {
+
+		hd := createHeaderDiff(content.Header, session.Payload().Content().GetHeader())
+
+		headerDiffData, _ := json.Marshal(hd)
+		strHeaderDiff := string(p.appleFilters(headerDiffData))
+
 		slsLog.Contents = append(slsLog.Contents,
+			&sls.LogContent{
+				Key:   proto.String("header_diff"),
+				Value: proto.String(strHeaderDiff),
+			},
 			&sls.LogContent{
 				Key:   proto.String("begin_from"),
 				Value: proto.String(content.BeginFrom),
@@ -482,4 +498,55 @@ func (p *Audit) Route(session mail.Session) worker.HandlerFunc {
 	}
 
 	return nil
+}
+
+func copyHeader(header map[string]string) map[string]string {
+	if header == nil {
+		return nil
+	}
+
+	n := make(map[string]string)
+
+	for k, v := range header {
+		n[k] = v
+	}
+
+	return n
+}
+
+func createHeaderDiff(oldHeader map[string]string, newHeader map[string]string) HeaderDiff {
+
+	diff := HeaderDiff{}
+
+	for k, v := range newHeader {
+
+		oldV, exist := oldHeader[k]
+
+		if exist {
+			if oldV != v {
+				if diff.Modified == nil {
+					diff.Modified = make(map[string]string)
+				}
+				diff.Modified[k] = v
+			}
+		} else {
+			if diff.Added == nil {
+				diff.Added = make(map[string]string)
+			}
+			diff.Added[k] = v
+		}
+	}
+
+	for k, v := range oldHeader {
+		_, exist := newHeader[k]
+
+		if !exist {
+			if diff.Deleted == nil {
+				diff.Deleted = make(map[string]string)
+			}
+			diff.Deleted[k] = v
+		}
+	}
+
+	return diff
 }
